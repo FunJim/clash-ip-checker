@@ -35,6 +35,16 @@ selector_name: "GLOBAL"
 # False: 显示 (调试用)
 headless: true
 
+# ipinfo.io API Token (可选)
+# 用于检测节点归属地国家信息；留空则使用免费额度（50k 次/月足够日常使用）
+# 注册地址: https://ipinfo.io
+ipinfo_token: ""
+
+# 跳过已成功检测过的节点 (True/False)
+# True: 节点名已含【🟢...】等成功标签时自动跳过，只检测失败节点 / 无标签节点
+# False: 不跳过，全量重新检测
+skip_checked: true
+
 # Node跳过检测的关键字列表
 skip_keywords:
   - "剩余"

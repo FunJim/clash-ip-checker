@@ -6,6 +6,7 @@ from typing import Dict, Any, List
 
 # Import Utils
 from utils.config_loader import load_config
+from utils.node_filter import is_already_checked
 from core.ip_checker import IPChecker
 from core.clash_api import ClashController
 
@@ -22,6 +23,8 @@ SKIP_KEYWORDS = cfg.get('skip_keywords', ["剩余", "重置", "到期", "有效�
 HEADLESS = cfg.get('headless', True)
 SOURCE = cfg.get('source', 'ping0')
 FALLBACK = cfg.get('fallback', True)
+IPINFO_TOKEN = cfg.get('ipinfo_token', "")
+SKIP_CHECKED = cfg.get('skip_checked', True)
 
 async def test_single_proxy(controller: ClashController, checker: IPChecker, proxy_name: str, selector: str, local_proxy: str, 
                           fast_mode: bool = FAST_MODE, source: str = SOURCE, fallback: bool = FALLBACK) -> Dict[str, Any]:
@@ -149,7 +152,7 @@ async def main():
     selector_to_use = SELECTOR_NAME
     # (Optional) Verify selector existence logic could go here, omitting for brevity/fidelity to original flow for now
 
-    checker = IPChecker(headless=HEADLESS)
+    checker = IPChecker(headless=HEADLESS, ipinfo_token=IPINFO_TOKEN)
     await checker.start()
 
     results_map = {} # name -> result_string
@@ -164,9 +167,13 @@ async def main():
                 if kw in name:
                     should_skip = True
                     break
-            
+
             if should_skip:
                 print(f"\n[{i+1}/{len(proxies)}] Skipping (Status Node): {name}")
+                continue
+
+            if SKIP_CHECKED and is_already_checked(name):
+                print(f"\n[{i+1}/{len(proxies)}] Skipping (Already Checked): {name}")
                 continue
             
             print(f"[{i+1}/{len(proxies)}] Progress...", end="") 

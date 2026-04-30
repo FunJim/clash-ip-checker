@@ -17,6 +17,10 @@ function app() {
             output_suffix: '_checked',
             selector_name: 'GLOBAL',
             headless: true,
+            // ipinfo.io token (留空使用免费额度)
+            ipinfo_token: '',
+            // 跳过已成功检测过的节点 (名称含【🟢...】等成功标签)
+            skip_checked: true,
             // 跳过关键词 (逗号分隔字符串)
             skip_keywords_str: '剩余,重置,到期,有效期,官网,网址,更新,公告,建议'
         },

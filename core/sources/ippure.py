@@ -40,6 +40,7 @@ class IPPureSource(BaseCheckSource):
                     if info == "|" or not info: info = "未知"
                     result["full_string"] = f"【{result['pure_emoji']} {info}】"
                 else:
+                    print(f"     [ippure] API returned status {resp.status_code}")
                     result["error"] = f"API Error {resp.status_code}"
                     result["full_string"] = "【❌ API Error】"
         except Exception as e:

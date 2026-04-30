@@ -91,6 +91,20 @@
                             隐藏浏览器窗口
                         </label>
 
+                        <label style="margin-top: 0.5rem;">
+                            <input type="checkbox" x-model="config.skip_checked">
+                            跳过已成功检测的节点 (名称含【🟢...】等标签)
+                        </label>
+
+                        <label
+                            style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed rgba(255,255,255,0.1);">
+                            ipinfo.io Token (可选)
+                            <small
+                                style="display: block; color: var(--text-muted); margin-bottom: 0.5rem;">用于检测节点归属地；留空使用免费额度 (50k/月)</small>
+                            <input type="text" x-model="config.ipinfo_token"
+                                placeholder="留空使用免费额度">
+                        </label>
+
                         <label
                             style="margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed rgba(255,255,255,0.1);">
                             跳过关键词 (逗号分隔)
@@ -152,6 +166,7 @@
                         <th><input type="checkbox" @change="toggleAll" :checked="selected.length === nodes.length"></th>
                         <th>节点名</th>
                         <th>IP</th>
+                        <th>归属地</th>
                         <th>风控</th>
                         <th x-show="config.fast_mode">共享</th>
                         <th x-show="!config.fast_mode">Bot</th>
@@ -162,7 +177,8 @@
                 </thead>
                 <tbody>
                     <template x-for="node in nodes" :key="node.id">
-                        <tr :class="{'degraded': node.source !== 'ping0'}">
+                        <tr :class="{'degraded': node.source !== 'ping0' && node.status !== 'skipped', 'skipped': node.status === 'skipped'}"
+                            :title="node.status === 'skipped' ? (node.skip_reason === 'already_checked' ? '已检测过，自动跳过' : '命中跳过关键词') : ''">
                             <td>
                                 <input type="checkbox" :value="node.id" x-model="selected">
                             </td>
@@ -172,7 +188,15 @@
                                 <input x-show="editingId === node.id" x-model="editValue" @blur="saveEdit(node)"
                                     @keyup.enter="saveEdit(node)" @keyup.escape="cancelEdit" class="inline-edit">
                             </td>
-                            <td x-text="node.ip"></td>
+                            <td>
+                                <span x-show="node.status !== 'skipped'" x-text="node.ip"></span>
+                                <span x-show="node.status === 'skipped'" style="opacity:0.6">跳过</span>
+                            </td>
+                            <td>
+                                <span x-show="node.country_flag"
+                                    x-text="`${node.country_flag} ${node.country}`"></span>
+                                <span x-show="!node.country_flag" style="opacity:0.4">—</span>
+                            </td>
                             <td><span :class="getRiskClass(node.risk)" x-text="node.risk"></span></td>
                             <td x-show="config.fast_mode"><span :class="getSharedClass(node.shared)"
                                     x-text="node.shared || 'N/A'"></span></td>

@@ -7,20 +7,25 @@ import json
 import copy
 import io
 import os
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
 # Local imports
 from state import state
 from schemas import StartRequest, UpdateNodeRequest, ExportRequest, RecheckRequest
 from core.clash_api import ClashController
+from utils.node_filter import is_already_checked
 
 router = APIRouter(prefix="/api")
 yaml = YAML()
 yaml.preserve_quotes = True
 
 # --- Helper Function to run check in background ---
-async def _run_check(proxies: List[Dict], config: Dict):
-    """Background task: check all nodes using Clash API"""
+async def _run_check(proxies_with_idx: List[Tuple[int, Dict]], config: Dict):
+    """Background task: check all (non-skipped) nodes using Clash API.
+
+    proxies_with_idx carries pairs of (state.nodes index, proxy config) so we can
+    update the correct slot even when skipped nodes are interleaved in state.nodes.
+    """
     # Get config values
     api_url = config.get("clash_api_url", "http://127.0.0.1:9097")
     api_secret = config.get("clash_api_secret", "")
@@ -29,18 +34,20 @@ async def _run_check(proxies: List[Dict], config: Dict):
     source = config.get("source", "ping0")
     fallback = config.get("fallback", True)
     headless = config.get("headless", True)
-    
-    # Update checker headless setting dynamically
+    ipinfo_token = config.get("ipinfo_token", "")
+
+    # Update checker settings dynamically
     state.checker.headless = headless
-    
+    state.checker.geo.token = ipinfo_token
+
     # Check if empty
-    if not proxies:
+    if not proxies_with_idx:
         state.is_running = False
         state.events.append({"type": "complete", "total": 0})
         return
-        
-    state.total = len(proxies)
-    
+
+    state.total = len(proxies_with_idx)
+
     # Initialize Clash controller
     controller = ClashController(api_url, api_secret)
     
@@ -65,44 +72,44 @@ async def _run_check(proxies: List[Dict], config: Dict):
         return
     
     checked_count = 0
-    
-    for i, proxy in enumerate(proxies):
+
+    for idx, proxy in proxies_with_idx:
         if not state.is_running:
             break
-        
-        name = proxy.get("name", f"Node {i}")
+
+        name = proxy.get("name", f"Node {idx}")
         state.current_node = name
-        
+
         try:
             # 1. Switch to this node via Clash API
             print(f"[Web] Switching to: {name}")
             switched = await controller.switch_proxy(selector, name)
-            
+
             if not switched:
                 node_data = {
-                    "id": i,
+                    "id": idx,
                     "original_name": name,
                     "name": f"{name}【❌ 切换失败】",
                     "ip": "❓",
                     "status": "❌ 切换失败",
                     "proxy_config": proxy
                 }
-                state.nodes[i] = node_data
+                state.nodes[idx] = node_data
                 state.events.append({"type": "progress", "progress": checked_count + 1, "total": state.total, "node": node_data})
                 checked_count += 1
                 continue
-            
+
             # 2. Wait for switch to take effect
             await asyncio.sleep(1)
-            
+
             # 3. Check IP through Clash proxy
             if fast_mode:
                 result = await state.checker.check_fast(proxy_url, source=source, fallback=fallback)
             else:
                 result = await state.checker.check_browser(proxy=proxy_url)
-            
+
             node_data = {
-                "id": i,
+                "id": idx,
                 "original_name": name,
                 "name": f"{name}{result.get('full_string', '')}",
                 "ip": result.get("ip", "❓"),
@@ -111,12 +118,15 @@ async def _run_check(proxies: List[Dict], config: Dict):
                 "shared": result.get("shared_users", "N/A"),  # For fast mode
                 "type": result.get("ip_attr", "❓"),
                 "native": result.get("ip_src", "❓"),
+                "country": result.get("country_name", ""),
+                "country_code": result.get("country_code", ""),
+                "country_flag": result.get("country_flag", ""),
                 "source": result.get("source", "unknown"),
                 "status": "✅" if result.get("source") == "ping0" else "⚠️ 降级",
                 "proxy_config": proxy
             }
-            state.nodes[i] = node_data
-            
+            state.nodes[idx] = node_data
+
             # Push event
             checked_count += 1
             state.events.append({
@@ -125,10 +135,10 @@ async def _run_check(proxies: List[Dict], config: Dict):
                 "total": state.total,
                 "node": node_data
             })
-            
+
         except Exception as e:
             node_data = {
-                "id": i,
+                "id": idx,
                 "original_name": name,
                 "name": f"{name}【❌ Error】",
                 "ip": "❓",
@@ -136,14 +146,14 @@ async def _run_check(proxies: List[Dict], config: Dict):
                 "error": str(e),
                 "proxy_config": proxy
             }
-            state.nodes[i] = node_data
+            state.nodes[idx] = node_data
             checked_count += 1
             state.events.append({
                 "type": "error",
                 "node_name": name,
                 "error": str(e)
             })
-        
+
         state.progress = checked_count
     
     # Complete
@@ -192,38 +202,50 @@ async def start_check(request: StartRequest):
         state.nodes = []
         state.events = []  # Clear previous events
         state.progress = 0
-        # Filter proxies based on skip keywords
+        # Filter proxies based on skip keywords / already-checked tags
         skip_keywords_str = request.config.get("skip_keywords_str", "")
         skip_keywords = [kw.strip() for kw in skip_keywords_str.split(",") if kw.strip()]
-        
-        active_proxies = []
+        skip_checked = request.config.get("skip_checked", True)
+
+        active_proxies: List[Tuple[int, Dict]] = []  # (state.nodes index, proxy)
         for p in proxies:
             name = p.get("name", "")
-            if skip_keywords and any(kw in name for kw in skip_keywords):
-                print(f"[Web] Skipping (in start): {name}")
-                continue
-            active_proxies.append(p)
-            
-            # Pre-fill node for immediate display
-            state.nodes.append({
-                "id": len(active_proxies) - 1,
+            idx = len(state.nodes)
+
+            base_node = {
+                "id": idx,
                 "original_name": name,
                 "name": name,
-                "ip": "...",
+                "ip": "",
                 "risk": "",
                 "shared": "",
                 "type": "",
                 "native": "",
+                "country": "",
+                "country_code": "",
+                "country_flag": "",
                 "source": "",
-                "status": "pending",
-                "proxy_config": p
-            })
+                "proxy_config": p,
+            }
+
+            if skip_keywords and any(kw in name for kw in skip_keywords):
+                print(f"[Web] Skipping (keyword): {name}")
+                state.nodes.append({**base_node, "status": "skipped", "skip_reason": "keyword"})
+                continue
+            if skip_checked and is_already_checked(name):
+                print(f"[Web] Skipping (already checked): {name}")
+                state.nodes.append({**base_node, "status": "skipped", "skip_reason": "already_checked"})
+                continue
+
+            # Active: pending state and queue for checking
+            state.nodes.append({**base_node, "ip": "...", "status": "pending"})
+            active_proxies.append((idx, p))
 
         state.total = len(active_proxies)
-        
+
         # Start background task with filtered proxies
         asyncio.create_task(_run_check(active_proxies, request.config))
-        
+
         return {"task_id": state.task_id, "total": state.total}
     
     except YAMLError as e:
@@ -328,9 +350,11 @@ async def recheck_node(node_id: int, request: RecheckRequest):
     source = config.get("source", "ping0")
     fallback = config.get("fallback", True)
     headless = config.get("headless", True)
-    
-    # Update checker headless setting dynamically
+    ipinfo_token = config.get("ipinfo_token", "")
+
+    # Update checker settings dynamically
     state.checker.headless = headless
+    state.checker.geo.token = ipinfo_token
    
 
 
@@ -371,6 +395,9 @@ async def recheck_node(node_id: int, request: RecheckRequest):
             "shared": result.get("shared_users", "N/A"),
             "type": result.get("ip_attr", "❓"),
             "native": result.get("ip_src", "❓"),
+            "country": result.get("country_name", ""),
+            "country_code": result.get("country_code", ""),
+            "country_flag": result.get("country_flag", ""),
             "source": result.get("source", "unknown"),
             "status": "✅" if result.get("source") == "ping0" else "⚠️ 降级",
         })
